@@ -3,7 +3,7 @@
 # is /etc/mailname.
 #myorigin = /etc/mailname
 
-smtpd_banner = $myhostname ESMTP $mail_name (Ubuntu)
+smtpd_banner = $myhostname ESMTP $mail_name
 biff = no
 
 # appending .domain is the MUA's job.
@@ -30,14 +30,14 @@ smtp_tls_session_cache_database = btree:${data_directory}/smtp_scache
 
 
 smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated defer_unauth_destination
-myhostname = pop-os
+myhostname = {{.Hostname}}
 alias_maps = hash:/etc/aliases
 alias_database = hash:/etc/aliases
-mydestination = $myhostname, pop-os, localhost.localdomain, , localhost
+mydestination = $myhostname, {{.Hostname}}, localhost.localdomain, , localhost
 
 
 # relayhost
-relayhost = [smtp.office365.com]:587
+relayhost = [{{.RelayHost}}]:{{.RelayHostPort}}
 smtp_sasl_auth_enable = yes
 smtp_sasl_password_maps = hash:/etc/postfix/sasl/sasl_passwd
 smtp_sasl_security_options = noanonymous
@@ -55,9 +55,8 @@ inet_interfaces = all
 inet_protocols = ipv4
 
 
-
 # Archive sent mail to a local user (sentmailuser)
-always_bcc = abc
+always_bcc = {{.HostUserName}}
 
 # Ensure local mail is delivered in Maildir format
 home_mailbox = Maildir/
