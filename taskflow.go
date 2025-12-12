@@ -14,5 +14,7 @@ func main() {
 	// }
 	// cmd.SetPostfixConfig(smtpAcccount)
 
-	cmd.ParsePostfixLog()
+	// cmd.IndexMail()
+	cmd.GetPostfixQueue()
+
 }
