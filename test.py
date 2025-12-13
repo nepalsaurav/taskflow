@@ -1,15 +1,9 @@
-import smtplib
-from email.message import EmailMessage
+import notmuch
 
-# Create the email
-msg = EmailMessage()
-msg["From"] = "nepalsaurav123@gmail.com"
-msg["To"] = "nepalsaurav123@gmail.com"
-msg["Subject"] = "Test Email"
-msg.set_content("Hello! This is a test email sent via Postfix SMTP.")
+maildir_path = "~/Maildir"
 
-# Connect to local Postfix SMTP server
-with smtplib.SMTP("localhost", 25) as smtp:
-    smtp.send_message(msg)
 
-print("Email sent successfully!")
+db = notmuch.Database(maildir_path, mode=notmuch.Database.MODE_READ_WRITE)
+
+
+print(db)
