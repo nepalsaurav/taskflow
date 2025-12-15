@@ -1,163 +1,189 @@
 package cmd
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net/mail"
 	"os"
 	"path/filepath"
 	"strings"
-	"taskflow/db"
+	"sync"
+	"taskflow/models"
+	"time"
 
-	sq "github.com/Masterminds/squirrel"
 	"github.com/k0kubun/pp/v3"
+	"github.com/pocketbase/dbx"
 )
 
-// IndexMail scans the user's Maildir "new" directory and indexes all messages.
-// It resolves the Maildir path, builds the path to "new/", and delegates the
-// actual indexing work to IndexMailByPath. Returns an error only if the Maildir
-// root cannot be resolved; errors during indexing are handled inside
-// IndexMailByPath.
-func IndexMail() error {
-	maildirPath, err := GetMailDirPath()
+const (
+	MAILDIR_DIR string = "Maildir"
+	MAILDIR_NEW string = "cur"
+	MAILDIR_CUR string = "new"
+)
+
+type MaildirConfig struct{}
+type Maildir struct{}
+type IndexMailResp struct {
+	numberOfMailIndex int
+	Message           string
+}
+
+func (c MaildirConfig) getDir(path string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("error on getting user home dir, err: %v\n", err)
+		return "", fmt.Errorf("error on getting user home dir, err: %w", err)
+	}
+	mailDir := filepath.Join(home, MAILDIR_DIR, path)
+	return mailDir, nil
+}
+
+func (c MaildirConfig) getMailDirNew() (string, error) {
+	return c.getDir(MAILDIR_NEW)
+}
+
+func (c MaildirConfig) getMailDirCur() (string, error) {
+	return c.getDir(MAILDIR_CUR)
+}
+
+func (m Maildir) IndexMail() error {
+	maildirConfig := MaildirConfig{}
+	newPath, err := maildirConfig.getMailDirNew()
 	if err != nil {
 		return err
 	}
-	maildirNewPath := filepath.Join(maildirPath, "new")
-	IndexMailByPath(maildirNewPath)
+	r, _ := m.indexMailByPath(newPath)
+	pp.Println(r)
 	return nil
 }
 
-// IndexMailByPath walks the specified Maildir path and processes every message
-// file it contains. Directories are skipped. For each file, it calls
-// getEmailMessage to parse the email and logs or indexes the resulting
-// MailMessage. File-level errors are logged and ignored so the walk continues.
-// Returns nil unless the walk setup itself fails.
-func IndexMailByPath(path string) error {
+func (m Maildir) indexMailByPath(path string) (IndexMailResp, error) {
+	start := time.Now()
+	mailMessageList, err := m.walkDir(path)
+	if err != nil {
+		return IndexMailResp{}, err
+	}
+
+	db, err := models.DefaultDBConnect("database/mail.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer db.Close()
+
+	err = db.Transactional(func(tx *dbx.Tx) error {
+		for _, msg := range mailMessageList {
+			if msg.TrackingID == "" {
+				msg.TrackingID = msg.MessageID
+			}
+
+			_, err := tx.Insert("mailbox", dbx.Params{
+				"tracking_id":  msg.TrackingID,
+				"message_id":   msg.MessageID,
+				"maildir_path": msg.MaildirPath,
+				"date_ts":      msg.DateTs,
+				"from_addr":    msg.FromAddr,
+				"to_addr":      msg.ToAddr,
+				"cc_addr":      msg.CCAddr,
+				"bcc_addr":     msg.BCCAddr,
+				"subject":      msg.Subject,
+			}).Execute()
+
+			if err != nil {
+				return err
+			}
+			fmt.Println(msg.MessageID)
+		}
+		return nil
+	})
+
+	elapsed := time.Since(start)
+	message := fmt.Sprintf("complete indexing mail in %s", elapsed)
+	if len(mailMessageList) == 0 {
+		message = "There is no new mail to index"
+	}
+	return IndexMailResp{numberOfMailIndex: len(mailMessageList), Message: message}, nil
+}
+
+func (m Maildir) walkDir(path string) ([]models.MailBox, error) {
+
+	var wg sync.WaitGroup
+	mailMessageList := make(chan models.MailBox)
+
 	filepath.WalkDir(path, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			log.Printf("unable to read maildir path: %v\n", err)
-			return nil
+			log.Printf("error %v", err)
 		}
 		if d.IsDir() {
 			return nil
 		}
-
-		emailMessage, _ := getEmailMessage(path)
-
-		db, err := db.OpenDB("database/mailbox.db")
-		if err != nil {
-			println(err)
-		}
-		defer db.Close()
-
-		query := sq.Insert("mailbox").
-			Columns("tracking_id", "message_id", "maildir_path", "from_addr", "to_addr", "cc_addr", "bcc_addr", "subject", "body_text", "date_ts", "status").
-			Values(
-				emailMessage.TrackingID,
-				emailMessage.MessageID,
-				emailMessage.MaildirPath,
-				emailMessage.FromAddr,
-				emailMessage.ToAddr,
-				emailMessage.CCAddr,
-				emailMessage.BCCAddr,
-				emailMessage.Subject,
-				emailMessage.BodyText,
-				emailMessage.DateTS,
-				emailMessage.Status,
-			).PlaceholderFormat(sq.Question)
-
-		sqlStr, args, err := query.ToSql()
-
-		if err != nil {
-			log.Printf("failed to build sql: %v\n", err)
-			return nil
-		}
-
-		result, err := db.Exec(sqlStr, args...)
-
-		if err != nil {
-			log.Printf("failed to insert mailbox: %v\n", err)
-			return nil
-		}
-
-		fmt.Println(result)
-		pp.Println(emailMessage)
-
+		wg.Go(func() {
+			msg, err := m.parseMail(path)
+			if err != nil {
+				return
+			}
+			mailMessageList <- msg
+		})
 		return nil
 	})
 
-	return nil
+	go func() {
+		wg.Wait()
+		close(mailMessageList)
+	}()
+
+	messageList := []models.MailBox{}
+	for val := range mailMessageList {
+		messageList = append(messageList, val)
+	}
+
+	return messageList, nil
 }
 
-// getEmailMessage reads and parses an email file at the given path into a MailMessage struct.
-// It extracts common headers (From, To, Cc, Bcc, Subject, Message-ID) and the message body.mail
-// The MailDate field is set if the "Date" header can be parsed. FileId is derived from the
-// Maildir filename using GetUniqueFileId. Any file-level or parsing errors are logged;mail
-// in case of error, an empty MailMessage is returned along with nil error to allow processing
-// to continue. Status is set to "Sent" by default.
-func getEmailMessage(path string) (db.Mailbox, error) {
-	fileData, err := os.ReadFile(path)
+func (m Maildir) parseMail(filePath string) (models.MailBox, error) {
+	file, err := os.Open(filePath)
 	if err != nil {
-		log.Printf("failed to read file %s: %v", path, err)
-		return db.Mailbox{}, nil
+		return models.MailBox{}, fmt.Errorf("can not load message file :%w", err)
 	}
+	defer file.Close()
+	msg, err := mail.ReadMessage(file)
 
-	msg, err := mail.ReadMessage(bytes.NewReader(fileData))
-	if err != nil {
-		log.Printf("failed to parse email %s: %v", path, err)
-		return db.Mailbox{}, nil
-	}
+	mailMessage := models.MailBox{}
 
-	body, err := io.ReadAll(msg.Body)
-	msgBody := ""
-	if err != nil {
-		log.Printf("failed to read body %s: %v", path, err)
-	}
-	msgBody = string(body)
-
-	var mailMessage db.Mailbox
-	mailMessage.FromAddr = msg.Header.Get("From")
-	mailMessage.ToAddr = parseAddressList(msg.Header.Get("To"))
-	mailMessage.CCAddr = parseAddressList(msg.Header.Get("Cc"))
-	mailMessage.BCCAddr = parseAddressList(msg.Header.Get("Bcc"))
+	// append data
+	mailMessage.FromAddr = m.parseAddress(msg.Header.Get("From"))
+	mailMessage.ToAddr = m.parseAddressList(msg.Header.Get("To"))
+	mailMessage.CCAddr = m.parseAddressList(msg.Header.Get("CC"))
+	mailMessage.BCCAddr = m.parseAddressList(msg.Header.Get("BCC"))
 	mailMessage.Subject = msg.Header.Get("Subject")
-	mailMessage.BodyText = msgBody
-	mailMessage.Status = "Sent"
-	mailMessage.MaildirPath = path
+	mailMessage.MaildirPath = filePath
 	mailMessage.MessageID = msg.Header.Get("Message-ID")
 	mailMessage.TrackingID = msg.Header.Get("Tracking-ID")
 
 	if date, err := msg.Header.Date(); err == nil {
-		mailMessage.DateTS = date.Unix()
+		mailMessage.DateTs = date.Unix()
 	}
 
 	return mailMessage, nil
 }
 
-// get maildir path
-func GetMailDirPath() (string, error) {
-	homedir, err := os.UserHomeDir()
+func (m Maildir) parseAddress(header string) string {
+	addr, err := mail.ParseAddress(header)
 	if err != nil {
-		log.Printf("unable to get homedir path err: %v\n", err)
-		return string(""), fmt.Errorf("unable to get homedir path err: %v\n", err)
+		return ""
 	}
-	maildirPath := filepath.Join(homedir, "Maildir")
-	return maildirPath, nil
+	return addr.Address
 }
 
-func parseAddressList(header string) string {
+func (m Maildir) parseAddressList(header string) string {
 	addrs, err := mail.ParseAddressList(header)
 	if err != nil {
 		return ""
 	}
-
 	list := make([]string, len(addrs))
 	for i, a := range addrs {
 		list[i] = a.Address
 	}
-	return strings.Join(list, "")
+	return strings.Join(list, ",")
 }
