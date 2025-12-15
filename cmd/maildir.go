@@ -18,8 +18,8 @@ import (
 
 const (
 	MAILDIR_DIR string = "Maildir"
-	MAILDIR_NEW string = "cur"
-	MAILDIR_CUR string = "new"
+	MAILDIR_NEW string = "new"
+	MAILDIR_CUR string = "cur"
 )
 
 type MaildirConfig struct{}
@@ -78,7 +78,7 @@ func (m Maildir) indexMailByPath(path string) (IndexMailResp, error) {
 				msg.TrackingID = msg.MessageID
 			}
 
-			_, err := tx.Insert("mailbox", dbx.Params{
+			_, err = tx.Insert("mailbox", dbx.Params{
 				"tracking_id":  msg.TrackingID,
 				"message_id":   msg.MessageID,
 				"maildir_path": msg.MaildirPath,
@@ -91,9 +91,17 @@ func (m Maildir) indexMailByPath(path string) (IndexMailResp, error) {
 			}).Execute()
 
 			if err != nil {
-				return err
+				if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+					m.moveFile(msg.MaildirPath)
+					continue
+				} else {
+					return err
+				}
 			}
-			fmt.Println(msg.MessageID)
+
+			// move file
+			m.moveFile(msg.MaildirPath)
+
 		}
 		return nil
 	})
@@ -174,6 +182,21 @@ func (m Maildir) parseAddress(header string) string {
 		return ""
 	}
 	return addr.Address
+}
+
+func (m Maildir) moveFile(filePath string) bool {
+	maildirConfig := MaildirConfig{}
+	curPath, err := maildirConfig.getMailDirCur()
+	if err != nil {
+		return false
+	}
+
+	newPath := filepath.Join(curPath, filepath.Base(filePath))
+
+	if err := os.Rename(filePath, newPath); err != nil {
+		return false
+	}
+	return true
 }
 
 func (m Maildir) parseAddressList(header string) string {

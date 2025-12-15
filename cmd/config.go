@@ -6,7 +6,6 @@ import (
 	"github.com/pelletier/go-toml"
 )
 
-
 type Config struct {
 	PostfixLogFile string `toml:"post_fix_log_file"`
 }
