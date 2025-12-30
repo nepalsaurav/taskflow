@@ -12,7 +12,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/k0kubun/pp"
-	"github.com/nepalsaurav/postfix_admin/models"
+	"github.com/nepalsaurav/taskflow/models"
+
 	"github.com/pocketbase/dbx"
 	"modernc.org/sqlite"
 )

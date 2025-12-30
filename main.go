@@ -1,6 +1,6 @@
 package main
 
-import "github.com/nepalsaurav/postfix_admin/models"
+import "github.com/nepalsaurav/taskflow/models"
 
 func main() {
 
