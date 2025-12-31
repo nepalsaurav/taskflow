@@ -1,6 +1,7 @@
 package pkg
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -13,9 +14,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/k0kubun/pp"
 	"github.com/nepalsaurav/taskflow/models"
-
-	"github.com/pocketbase/dbx"
-	"modernc.org/sqlite"
+	"gorm.io/gorm"
 )
 
 const (
@@ -63,20 +62,19 @@ func (c MaildirConfig) getMailDirCur() (string, error) {
 }
 
 // IndexMail scans the "new" Maildir directory and indexes any new emails into the database.
-func (m Maildir) IndexMail() error {
+func (m Maildir) IndexMail() (IndexMailResp, error) {
 	maildirConfig := MaildirConfig{}
 	newPath, err := maildirConfig.getMailDirNew()
 	if err != nil {
-		return err
+		return IndexMailResp{}, err
 	}
-	m.indexMailByPath(newPath)
-	return nil
+	return m.indexMailByPath(newPath)
+
 }
 
 // indexMailByPath processes all files in the given directory and indexes them.
 func (m Maildir) indexMailByPath(path string) (IndexMailResp, error) {
-	m.walkDir(path)
-	return IndexMailResp{}, nil
+	return m.walkDir(path)
 }
 
 // walkDir walks the directory tree starting at path, parses email files concurrently,
@@ -88,17 +86,13 @@ func (m Maildir) walkDir(path string) (IndexMailResp, error) {
 	var counter int64
 
 	// open database
-	db, err := models.DefaultDBConnect("database/postfix_admin.db")
+	db, err := models.DefaultDBConnect("database/models.db")
 	if err != nil {
 		fmt.Println(err)
 		return IndexMailResp{}, err
 	}
 
-	// start transaction
-	tx, err := db.Begin()
-	if err != nil {
-		return IndexMailResp{}, err
-	}
+	tx := db.Begin()
 
 	// record succesfull parse and record file
 	successFile := []string{}
@@ -111,7 +105,6 @@ func (m Maildir) walkDir(path string) (IndexMailResp, error) {
 		// parse email
 		msg, err := m.parseMail(p)
 		if err != nil {
-			fmt.Println(err)
 			return nil
 		}
 
@@ -119,28 +112,25 @@ func (m Maildir) walkDir(path string) (IndexMailResp, error) {
 		if msg.TrackingID == "" {
 			msg.TrackingID = msg.MessageID
 		}
-		_, err = tx.Insert("mailbox", dbx.Params{
-			"tracking_id":  msg.TrackingID,
-			"message_id":   msg.MessageID,
-			"maildir_path": msg.MaildirPath,
-			"date_ts":      msg.DateTS,
-			"from_addr":    msg.FromAddr,
-			"to_addr":      msg.ToAddr,
-			"cc_addr":      msg.CcAddr,
-			"bcc_addr":     msg.BccAddr,
-			"subject":      msg.Subject,
-		}).Execute()
 
-		// check sql error
-		if err != nil {
-			if sqlerr, ok := err.(*sqlite.Error); ok {
-				if sqlerr.Code() == SQLITE_CONSTRAINT_UNIQUE {
-					successFile = append(successFile, msg.MaildirPath)
-				}
-			}
+		result := tx.Create(&models.MailBox{
+			TrackingID:  msg.TrackingID,
+			MessageID:   msg.MessageID,
+			MaildirPath: msg.MaildirPath,
+			DateTS:      msg.DateTS,
+			FromAddr:    msg.FromAddr,
+			ToAddr:      msg.ToAddr,
+			CcAddr:      msg.CcAddr,
+			BccAddr:     msg.BccAddr,
+			Subject:     msg.Subject,
+		})
+
+		// check transaction error
+		if errors.Is(result.Error, gorm.ErrDuplicatedKey) {
+			successFile = append(successFile, msg.MaildirPath)
 		}
 
-		if err == nil {
+		if result.Error == nil {
 			successFile = append(successFile, msg.MaildirPath)
 		}
 
@@ -153,7 +143,7 @@ func (m Maildir) walkDir(path string) (IndexMailResp, error) {
 	}
 
 	// commit transaction
-	_ = tx.Commit()
+	tx.Commit()
 
 	// check success file and move file from unread to read
 	for _, file := range successFile {
@@ -172,7 +162,6 @@ func (m Maildir) walkDir(path string) (IndexMailResp, error) {
 		Message:           message,
 	}
 
-	pp.Println(responseMessage)
 	return responseMessage, nil
 }
 

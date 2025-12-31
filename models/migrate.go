@@ -24,7 +24,7 @@ func Migrate() {
 		log.Fatal("failed to connect database:", err)
 	}
 
-	if err := db.AutoMigrate(&MailBox{}); err != nil {
+	if err := db.AutoMigrate(&MailLog{}, &MailLogLine{}, &MailBox{}); err != nil {
 		log.Fatal("failed to migrate database:", err)
 	}
 

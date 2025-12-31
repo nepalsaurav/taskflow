@@ -15,13 +15,16 @@ type Recipient struct {
 }
 
 type QueueEntry struct {
-	QueueName    string      `json:"queue_name"`
-	QueueID      string      `json:"queue_id"`
-	ArrivalTime  int64       `json:"arrival_time"`
-	MessageSize  int         `json:"message_size"`
-	ForcedExpire bool        `json:"forced_expire"`
-	Sender       string      `json:"sender"`
-	Recipients   []Recipient `json:"recipients"`
+	QueueName    string `json:"queue_name"`
+	QueueID      string `json:"queue_id"`
+	ArrivalTime  int64  `json:"arrival_time"`
+	MessageSize  int    `json:"message_size"`
+	ForcedExpire bool   `json:"forced_expire"`
+	Sender       string `json:"sender"`
+	Recipients   []struct {
+		Address     string `json:"address"`
+		DelayReason string `json:"delay_reason,omitempty"`
+	} `json:"recipients"`
 }
 
 func GetPostfixQueue() ([]QueueEntry, error) {

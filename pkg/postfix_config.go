@@ -15,20 +15,21 @@ import (
 const (
 	postfixConfigPath = "/etc/postfix/main.cf"
 	passwdFile        = "/etc/postfix/sasl/sasl_passwd"
-	dbFile            = "/etc/postfix/sasl/sasl_passwd.db"
 )
 
-type SMTPAccount struct {
-	Name     string `json:"name"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Auth     string `json:"auth"`
-	User     string `json:"user"`
-	Password string `json:"password"`
-	From     string `json:"from"`
+type PostfixConfig struct {
+	SMTPAccount struct {
+		Name     string `json:"name"`
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		Auth     string `json:"auth"`
+		User     string `json:"user"`
+		Password string `json:"password"`
+		From     string `json:"from"`
+	} `json:"smtpAccount"`
 }
 
-func SetPostfixConfig(smtpAccount SMTPAccount) error {
+func SetPostfixConfig(postfixConfig PostfixConfig) error {
 	tmpl, err := template.ParseFiles("conf/postfix.gotmpl")
 	if err != nil {
 		log.Printf("error parsing postfix config file, err: %v\n", err)
@@ -46,8 +47,8 @@ func SetPostfixConfig(smtpAccount SMTPAccount) error {
 	}
 	data := map[string]string{
 		"Hostname":      hostname,
-		"RelayHost":     smtpAccount.Host,
-		"RelayHostPort": strconv.Itoa(smtpAccount.Port),
+		"RelayHost":     postfixConfig.SMTPAccount.Host,
+		"RelayHostPort": strconv.Itoa(postfixConfig.SMTPAccount.Port),
 		"HostUserName":  currentUser.Name,
 	}
 
@@ -58,7 +59,7 @@ func SetPostfixConfig(smtpAccount SMTPAccount) error {
 		return err
 	}
 
-	if err := addSMTPPassword(smtpAccount); err != nil {
+	if err := addSMTPPassword(postfixConfig); err != nil {
 		return err
 	}
 
@@ -81,8 +82,8 @@ func SetPostfixConfig(smtpAccount SMTPAccount) error {
 	return nil
 }
 
-func addSMTPPassword(acc SMTPAccount) error {
-	entry := fmt.Sprintf("[%s]:%d\t%s:%s\n", acc.Host, acc.Port, acc.User, acc.Password)
+func addSMTPPassword(acc PostfixConfig) error {
+	entry := fmt.Sprintf("[%s]:%d\t%s:%s\n", acc.SMTPAccount.Host, acc.SMTPAccount.Port, acc.SMTPAccount.User, acc.SMTPAccount.Password)
 
 	// 2. Write to /etc/postfix/sasl/sasl_passwd
 	cmd := exec.Command("sudo", "tee", passwdFile)
