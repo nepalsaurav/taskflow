@@ -12,7 +12,6 @@ $USERNAME ALL=(root) NOPASSWD: /usr/bin/tee /etc/postfix/main.cf.new
 $USERNAME ALL=(root) NOPASSWD: /usr/bin/tee /etc/postfix/sasl/sasl_passwd
 $USERNAME ALL=(root) NOPASSWD: /usr/sbin/postfix reload
 $USERNAME ALL=(root) NOPASSWD: /usr/sbin/postfix check
-$USERNAME ALL=(root) NOPASSWD: /usr/sbin/postmap /etc/postfix/sasl/sasl_passwd
 $USERNAME ALL=(root) NOPASSWD: /bin/chmod 600 /etc/postfix/sasl/sasl_passwd
 $USERNAME ALL=(root) NOPASSWD: /usr/sbin/postmap /etc/postfix/sasl/sasl_passwd
 EOF

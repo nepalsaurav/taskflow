@@ -22,5 +22,8 @@ func main() {
 	//
 	//
 	models.Migrate()
-	pkg.GetMailLog()
+	// pkg.GetMailLog()
+	//
+
+	pkg.ImapLogin()
 }

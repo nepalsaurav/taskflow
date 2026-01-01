@@ -29,21 +29,21 @@ type PostfixConfig struct {
 	} `json:"smtpAccount"`
 }
 
-func SetPostfixConfig(postfixConfig PostfixConfig) error {
+func SetPostfixConfig(postfixConfig PostfixConfig) (PostfixConfig, error) {
 	tmpl, err := template.ParseFiles("conf/postfix.gotmpl")
 	if err != nil {
 		log.Printf("error parsing postfix config file, err: %v\n", err)
-		return err
+		return PostfixConfig{}, err
 	}
 	hostname, err := os.Hostname()
 	if err != nil {
 		log.Printf("error on getting hostname, err: %v\n", err)
-		return err
+		return PostfixConfig{}, err
 	}
 	currentUser, err := user.Current()
 	if err != nil {
 		log.Printf("error on getting current user, err: %v\n", err)
-		return err
+		return PostfixConfig{}, err
 	}
 	data := map[string]string{
 		"Hostname":      hostname,
@@ -56,11 +56,11 @@ func SetPostfixConfig(postfixConfig PostfixConfig) error {
 	err = tmpl.Execute(&buff, data)
 	if err != nil {
 		log.Printf("error on executing template with data, err: %v\n", err)
-		return err
+		return PostfixConfig{}, err
 	}
 
 	if err := addSMTPPassword(postfixConfig); err != nil {
-		return err
+		return PostfixConfig{}, err
 	}
 
 	// write posfixconfig using sudo + tee
@@ -70,16 +70,16 @@ func SetPostfixConfig(postfixConfig PostfixConfig) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("failed to write postfix config in %s error: %v\nOutput: %s", postfixConfigPath, err, output)
-		return err
+		return PostfixConfig{}, err
 	}
 
 	// reload postfix
 	if out, err := exec.Command("sudo", "postfix", "reload").CombinedOutput(); err != nil {
 		log.Printf("reload posfix failed err: %v\n%s", err, out)
-		return err
+		return PostfixConfig{}, err
 	}
 
-	return nil
+	return postfixConfig, nil
 }
 
 func addSMTPPassword(acc PostfixConfig) error {

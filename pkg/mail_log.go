@@ -1,127 +1,72 @@
 package pkg
 
 import (
-	"bufio"
-	"fmt"
-	"log"
 	"os"
-	"regexp"
-	"strings"
-	"time"
-
-	"github.com/nepalsaurav/taskflow/models"
-	"gorm.io/gorm/clause"
+	"os/exec"
 )
 
 var (
-	reQueueID      = regexp.MustCompile(`\b([0-9A-F]{8,16})\b`)
-	reTo           = regexp.MustCompile(`to=<([^>]+)>`)
-	reMessageID    = regexp.MustCompile(`message-id=<([^>]+)>`)
-	reStatus       = regexp.MustCompile(`status=(\S+)`)
-	PostfixLogPath = "/var/log/mail.log"
-	BatchSize      = 500
+	POSTFIX_LOG_FILE = "/var/log/mail.log"
 )
 
-// analyzeLine parses a single line and updates the log entry in the map.
-func analyzeLine(line string, logDict map[string]*models.MailLog) {
-	line = strings.TrimSpace(line)
-	if len(line) == 0 {
-		return
+func getLogReportText() (string, error) {
+	args := []string{
+		POSTFIX_LOG_FILE,
+		"--iso_date_time",
+		"-q",
+		"-smtpd-warning-detail=0",
+		"--rej_add_from",
+		"--verbose_msg_detail",
 	}
 
-	// 1. Extract Queue ID
-	match := reQueueID.FindStringSubmatch(line)
-	if len(match) < 2 {
-		return
-	}
-	uniqueID := match[1]
+	cmd := exec.Command("pflogsumm", args...)
 
-	// 2. Get or Create Entry
-	entry, exists := logDict[uniqueID]
-	if !exists {
-		entry = &models.MailLog{
-			UniqueID: uniqueID,
-		}
-		logDict[uniqueID] = entry
-	}
-
-	parts := strings.SplitN(line, " ", 2)
-	if len(parts) > 0 {
-		if parsedDate, err := time.Parse(time.RFC3339, parts[0]); err == nil {
-			entry.Date = parsedDate
-		}
-	}
-
-	if m := reTo.FindStringSubmatch(line); len(m) > 1 {
-		entry.Receipents += "," + m[1]
-	}
-
-	if m := reMessageID.FindStringSubmatch(line); len(m) > 1 {
-		entry.MessageID = m[1]
-	}
-
-	if m := reStatus.FindStringSubmatch(line); len(m) > 1 {
-		entry.Status = m[1]
-	}
-
-	// Append Raw Log Line
-	entry.Logs = append(entry.Logs, models.MailLogLine{
-		Line: line,
-	})
-}
-
-// saveBatch handles the database insertion logic
-func saveBatch(logDict map[string]*models.MailLog) error {
-	// Connect to DB once
-	db, err := models.DefaultDBConnect("database/models.db")
+	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("database connection failed: %w", err)
-	}
-	var logs []*models.MailLog
-	for _, logEntry := range logDict {
-		logs = append(logs, logEntry)
-	}
-	if len(logs) == 0 {
-		return nil
+		return "", err
 	}
 
-	result := db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "unique_id"}},
-		UpdateAll: true,
-	}).Create(&logs)
-
-	return result.Error
+	return string(out), err
 }
 
-func ScanLogFile(path string) error {
-	file, err := os.Open(path)
+func reportToMarkdown(report string) (string, error) {
+
+	inputfile, err := os.CreateTemp("", "pflogsumm_*.txt")
 	if err != nil {
-		return fmt.Errorf("unable to open log file: %w", err)
+		return "", err
 	}
-	defer file.Close()
+	defer os.Remove(inputfile.Name())
 
-	scanner := bufio.NewScanner(file)
-	// Increase buffer size if lines are very long
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	_, err = inputfile.Write([]byte(report))
+	if err != nil {
+		return "", err
+	}
+	inputfile.Close()
 
-	logDict := make(map[string]*models.MailLog)
+	outputfile, err := os.CreateTemp("", "pflogsumm_*.md")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(outputfile.Name())
 
-	for scanner.Scan() {
-		analyzeLine(scanner.Text(), logDict)
+	pandocCommand := exec.Command("pandoc", inputfile.Name(), "-t", "markdown", "-o", outputfile.Name())
+
+	if err := pandocCommand.Run(); err != nil {
+		return "", err
 	}
 
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading file: %w", err)
+	md, err := os.ReadFile(outputfile.Name())
+
+	if err != nil {
+		return "", err
 	}
-
-	saveBatch(logDict)
-
-	return nil
+	return string(md), nil
 }
 
-func GetMailLog() {
-	if err := ScanLogFile(PostfixLogPath); err != nil {
-		log.Printf("Failed to scan logs: %v", err)
+func PostfixLogDetail() (string, error) {
+	report, err := getLogReportText()
+	if err != nil {
+		return "", err
 	}
+	return reportToMarkdown(report)
 }

@@ -1,7 +1,6 @@
 package pkg
 
 import (
-	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -9,12 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/fsnotify/fsnotify"
-	"github.com/k0kubun/pp"
 	"github.com/nepalsaurav/taskflow/models"
-	"gorm.io/gorm"
 )
 
 const (
@@ -32,12 +27,6 @@ type MaildirConfig struct{}
 
 // Maildir handles indexing and processing of email messages stored in Maildir format.
 type Maildir struct{}
-
-// IndexMailResp represents the result of indexing emails.
-type IndexMailResp struct {
-	numberOfMailIndex int
-	Message           string
-}
 
 // getDir constructs the full path to a subdirectory within the user's Maildir.
 // Returns the path and any error encountered.
@@ -62,107 +51,50 @@ func (c MaildirConfig) getMailDirCur() (string, error) {
 }
 
 // IndexMail scans the "new" Maildir directory and indexes any new emails into the database.
-func (m Maildir) IndexMail() (IndexMailResp, error) {
+func (m Maildir) IndexMail() error {
 	maildirConfig := MaildirConfig{}
 	newPath, err := maildirConfig.getMailDirNew()
 	if err != nil {
-		return IndexMailResp{}, err
+		return err
 	}
 	return m.indexMailByPath(newPath)
 
 }
 
 // indexMailByPath processes all files in the given directory and indexes them.
-func (m Maildir) indexMailByPath(path string) (IndexMailResp, error) {
+func (m Maildir) indexMailByPath(path string) error {
 	return m.walkDir(path)
 }
 
 // walkDir walks the directory tree starting at path, parses email files concurrently,
 // counts processed messages, and prints a summary of the operation.
-func (m Maildir) walkDir(path string) (IndexMailResp, error) {
-	start := time.Now()
+func (m Maildir) walkDir(path string) error {
 
-	// counter for number of files scanned
-	var counter int64
-
-	// open database
-	db, err := models.DefaultDBConnect("database/models.db")
-	if err != nil {
-		fmt.Println(err)
-		return IndexMailResp{}, err
-	}
-
-	tx := db.Begin()
-
-	// record succesfull parse and record file
-	successFile := []string{}
-	// walk directory
-	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
 
 		// parse email
-		msg, err := m.parseMail(p)
-		if err != nil {
-			return nil
-		}
+		// msg, err := m.parseMail(p)
+		// if err != nil {
+		// 	return nil
+		// }
 
-		// insert into database
-		if msg.TrackingID == "" {
-			msg.TrackingID = msg.MessageID
-		}
+		// // insert into database
+		// if msg.TrackingID == "" {
+		// 	msg.TrackingID = msg.MessageID
+		// }
 
-		result := tx.Create(&models.MailBox{
-			TrackingID:  msg.TrackingID,
-			MessageID:   msg.MessageID,
-			MaildirPath: msg.MaildirPath,
-			DateTS:      msg.DateTS,
-			FromAddr:    msg.FromAddr,
-			ToAddr:      msg.ToAddr,
-			CcAddr:      msg.CcAddr,
-			BccAddr:     msg.BccAddr,
-			Subject:     msg.Subject,
-		})
-
-		// check transaction error
-		if errors.Is(result.Error, gorm.ErrDuplicatedKey) {
-			successFile = append(successFile, msg.MaildirPath)
-		}
-
-		if result.Error == nil {
-			successFile = append(successFile, msg.MaildirPath)
-		}
-
-		counter++
 		return nil
 	})
 	// catch error of walkdir
 	if err != nil {
-		return IndexMailResp{}, fmt.Errorf("could not walk dir err: %w", err)
+		return fmt.Errorf("could not walk dir err: %w", err)
 	}
 
-	// commit transaction
-	tx.Commit()
+	return nil
 
-	// check success file and move file from unread to read
-	for _, file := range successFile {
-		m.moveFile(file)
-	}
-
-	// response message
-	elapse := time.Since(start)
-	message := fmt.Sprintf("%d total email message scan and sync to database in %s", counter, elapse)
-	if counter == 0 {
-		message = "no new email to scan"
-	}
-
-	responseMessage := IndexMailResp{
-		numberOfMailIndex: int(counter),
-		Message:           message,
-	}
-
-	return responseMessage, nil
 }
 
 // parseMail reads an email file and extracts relevant metadata into a MailBox model.
@@ -183,9 +115,7 @@ func (m Maildir) parseMail(filePath string) (models.MailBox, error) {
 	mailMessage.CcAddr = m.parseAddressList(msg.Header.Get("CC"))
 	mailMessage.BccAddr = m.parseAddressList(msg.Header.Get("BCC"))
 	mailMessage.Subject = msg.Header.Get("Subject")
-	mailMessage.MaildirPath = filePath
 	mailMessage.MessageID = msg.Header.Get("Message-ID")
-	mailMessage.TrackingID = msg.Header.Get("Tracking-ID")
 
 	if date, err := msg.Header.Date(); err == nil {
 		mailMessage.DateTS = date.Unix()
@@ -203,20 +133,20 @@ func (m Maildir) parseAddress(header string) string {
 }
 
 // moveFile moves a file from the "new" directory to the "cur" directory.
-func (m Maildir) moveFile(filePath string) bool {
-	maildirConfig := MaildirConfig{}
-	curPath, err := maildirConfig.getMailDirCur()
-	if err != nil {
-		return false
-	}
+// func (m Maildir) moveFile(filePath string) bool {
+// 	maildirConfig := MaildirConfig{}
+// 	curPath, err := maildirConfig.getMailDirCur()
+// 	if err != nil {
+// 		return false
+// 	}
 
-	newPath := filepath.Join(curPath, filepath.Base(filePath))
+// 	newPath := filepath.Join(curPath, filepath.Base(filePath))
 
-	if err := os.Rename(filePath, newPath); err != nil {
-		return false
-	}
-	return true
-}
+// 	if err := os.Rename(filePath, newPath); err != nil {
+// 		return false
+// 	}
+// 	return true
+// }
 
 // parseAddressList extracts a comma-separated list of email addresses from a header.
 func (m Maildir) parseAddressList(header string) string {
@@ -229,47 +159,4 @@ func (m Maildir) parseAddressList(header string) string {
 		list[i] = a.Address
 	}
 	return strings.Join(list, ",")
-}
-
-func (m Maildir) WatchMailDir(watcher *fsnotify.Watcher) {
-	go func() {
-		for {
-			select {
-			case event, ok := <-watcher.Events:
-				if !ok {
-					return
-				}
-				if event.Has(fsnotify.Create) {
-					// parse mail
-					parsedMail, err := m.parseMail(event.Name)
-					if err != nil {
-						log.Printf("error while parsing mail from watch maildir err: %v\n", err)
-					}
-
-					_ = m.moveFile(event.Name)
-
-					pp.Println(parsedMail)
-				}
-			case err, ok := <-watcher.Errors:
-				if !ok {
-					return
-				}
-				log.Println("error:", err)
-			}
-		}
-	}()
-
-	maildirConfig := MaildirConfig{}
-	newPath, err := maildirConfig.getMailDirNew()
-	if err != nil {
-		log.Printf("unable to get maildir new path, err: %v\n", err)
-	}
-
-	fmt.Println(newPath)
-
-	err = watcher.Add(newPath)
-	if err != nil {
-		log.Printf("unable to watch maildir new path, err: %v\n", err)
-	}
-
 }
